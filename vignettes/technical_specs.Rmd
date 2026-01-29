@@ -1,0 +1,605 @@
+---
+title: "SignalY: Technical Documentation"
+subtitle: "Comprehensive Signal Extraction from Panel Data"
+author: "José Mauricio Gómez Julián"
+date: "`r format(Sys.time(), '%d %B %Y - %H:%M')`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{SignalY: Technical Documentation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Abstract
+
+This document provides comprehensive technical documentation for the SignalY R package, a unified framework for signal extraction from panel data. The package integrates spectral decomposition methods (wavelets, EMD, Bayesian HP filters), Bayesian sparse regression (regularized Horseshoe), dimensionality reduction (PCA, Dynamic Factor Models), and stationarity testing into a coherent analytical pipeline. We detail the mathematical foundations, algorithmic implementations, and interpretation frameworks underlying each methodology.
+
+---
+
+# Introduction and Epistemological Framework
+
+## Motivation
+
+The analysis of multivariate time series data—particularly panel data with cross-sectional and temporal dimensions—presents fundamental challenges:
+
+1. **Dimensionality**: Many candidate variables may influence the signal of interest
+2. **Frequency mixing**: Observed dynamics conflate trends, cycles, and noise
+3. **Sparsity**: Few variables may carry genuine predictive information
+4. **Persistence**: Non-stationarity complicates inference
+
+SignalY addresses these challenges through a unified pipeline distinguishing latent structure from phenomenological dynamics.
+
+## Conceptual Mapping
+
+**Definition 1.1 (Latent Structure).** The underlying data-generating process $\mathcal{M}$ that produces observable patterns, characterized by:
+
+- Deterministic components (trends, seasonality)
+- Common factors driving co-movement
+- Sparse causal relationships
+
+**Definition 1.2 (Phenomenological Dynamics).** Surface-level variability $Y_{\text{obs}} = f(\mathcal{M}) + \varepsilon$, where $\varepsilon$ captures idiosyncratic shocks and measurement error.
+
+The methodological components of SignalY operationalize this distinction:
+
+| Method | Extracts | Distinguishes From |
+|--------|----------|-------------------|
+| Wavelets/EMD | Trend, cycles | High-frequency noise |
+| Horseshoe | Relevant predictors | Noise variables |
+| PCA/DFM | Common factors | Idiosyncratic variation |
+| Unit root tests | Persistence type | Stationarity properties |
+
+---
+
+# Spectral Decomposition Methods
+
+## Wavelet Multi-Resolution Analysis
+
+### Theoretical Foundation
+
+The Discrete Wavelet Transform (DWT) decomposes a signal into frequency bands via dilations and translations of mother wavelet $\psi(t)$ and scaling function $\phi(t)$:
+
+$$
+\psi_{j,k}(t) = 2^{j/2} \psi(2^j t - k)
+$$
+
+$$
+\phi_{j,k}(t) = 2^{j/2} \phi(2^j t - k)
+$$
+
+For a signal $x(t)$ of length $N = 2^J$:
+
+$$
+x(t) = \sum_k s_{J,k} \phi_{J,k}(t) + \sum_{j=1}^{J} \sum_k d_{j,k} \psi_{j,k}(t)
+$$
+
+where $s_{J,k}$ are smooth coefficients and $d_{j,k}$ are detail coefficients at scale $j$.
+
+### MODWT Implementation
+
+SignalY uses the Maximal Overlap Discrete Wavelet Transform (MODWT), which:
+
+- Is shift-invariant (unlike DWT)
+- Works for arbitrary sample sizes (not just powers of 2)
+- Produces aligned multi-resolution analysis (MRA)
+
+**Algorithm 1: Wavelet Multi-Resolution Analysis**
+
+```
+Require: Signal x, filter type, levels to combine L
+1: Apply MODWT: (W₁, ..., W_J, V_J) ← MODWT(x)
+2: Compute MRA details: D_j ← MRA(W_j) for j = 1, ..., J
+3: Compute smooth: S_J ← MRA(V_J)
+4: Combine selected levels: C ← Σ_{j∈L} D_j
+5: return (C, S_J, {D_j})
+```
+
+### Filter Selection
+
+The package supports Daubechies least asymmetric filters (LA) with $L$ vanishing moments:
+
+| Filter | Length | Recommended Use |
+|--------|--------|-----------------|
+| la8 | 8 | Economic/financial data |
+| la16 | 16 | Very smooth signals |
+| d4 | 4 | Compact support needed |
+| haar | 2 | Discontinuous signals |
+
+### Scale-Period Correspondence
+
+For sampling period $\Delta t$, level $j$ captures periods:
+
+$$
+T_j \in [2^j \Delta t, 2^{j+1} \Delta t]
+$$
+
+For annual data ($\Delta t = 1$ year):
+
+- $D_3 + D_4$: 8–32 year cycles (business cycle range)
+- $D_5 + D_6$: 32–128 year cycles (long waves)
+
+## Empirical Mode Decomposition
+
+### Sifting Algorithm
+
+EMD decomposes $x(t)$ into Intrinsic Mode Functions (IMFs) adaptively:
+
+**Definition 2.1 (Intrinsic Mode Function).** A function $c(t)$ is an IMF if:
+
+1. The number of extrema and zero-crossings differ by at most one
+2. The mean of upper and lower envelopes is zero at all points
+
+### Reconstruction Property
+
+$$
+x(t) = \sum_{k=1}^{K} c_k(t) + r_K(t)
+$$
+
+**Algorithm 2: EMD Sifting Process**
+
+```
+Require: Signal x, max IMFs K
+1: r₀ ← x
+2: for k = 1, ..., K do
+3:     h ← r_{k-1}
+4:     repeat
+5:         Identify local maxima and minima of h
+6:         Interpolate upper envelope e_max, lower envelope e_min
+7:         Compute mean envelope: m ← (e_max + e_min)/2
+8:         Update: h ← h - m
+9:     until h satisfies IMF criteria
+10:    c_k ← h
+11:    r_k ← r_{k-1} - c_k
+12: end for
+13: return IMFs {c_k} and residue r_K
+```
+
+## Bayesian HP-GC Filter
+
+### State Space Formulation
+
+The Grant-Chan HP filter embeds trend-cycle decomposition in a state space model:
+
+$$
+y_t = \tau_t + \psi_t + \varepsilon_t, \quad \varepsilon_t \sim \mathcal{N}(0, \sigma_\varepsilon^2)
+$$
+
+$$
+\Delta^2 \tau_t = \eta_t, \quad \eta_t \sim \mathcal{N}(0, \sigma_\tau^2)
+$$
+
+$$
+\psi_t = \phi_1 \psi_{t-1} + \phi_2 \psi_{t-2} + \omega_t, \quad \omega_t \sim \mathcal{N}(0, \sigma_\psi^2)
+$$
+
+where $\tau_t$ is trend, $\psi_t$ is cycle, and $\varepsilon_t$ is irregular.
+
+### Prior Configurations
+
+The package implements three prior configurations:
+
+**1. Weakly Informative:**
+
+$$
+\sigma_\tau^2, \sigma_\psi^2, \sigma_\varepsilon^2 \sim \text{Inv-Gamma}(0.01, 0.01)
+$$
+
+$$
+\phi_1, \phi_2 \sim \mathcal{N}(0, 10^2) \mathbf{1}_{[\text{stationary}]}
+$$
+
+**2. Informative (calibrated to HP-1600 for annual data):**
+
+$$
+\sigma_\tau^2 / \sigma_\psi^2 \sim \text{Log-Normal}(\log(1/100), 0.5)
+$$
+
+**3. Empirical Bayes:** Hyperparameters estimated from data
+
+Model selection via Deviance Information Criterion:
+
+$$
+\text{DIC} = \bar{D}(\theta) + p_D = -2\mathbb{E}[\log p(y|\theta)] + 2p_D
+$$
+
+---
+
+# Bayesian Sparse Regression: Regularized Horseshoe
+
+## Model Specification
+
+For response $y \in \mathbb{R}^n$ and predictors $X \in \mathbb{R}^{n \times p}$:
+
+$$
+y_i = \alpha + x_i^\top \beta + \varepsilon_i, \quad \varepsilon_i \sim \mathcal{N}(0, \sigma^2)
+$$
+
+### Horseshoe Prior
+
+The standard Horseshoe places:
+
+$$
+\beta_j | \lambda_j, \tau \sim \mathcal{N}(0, \lambda_j^2 \tau^2)
+$$
+
+$$
+\lambda_j \sim \mathcal{C}^+(0, 1)
+$$
+
+$$
+\tau \sim \mathcal{C}^+(0, \tau_0)
+$$
+
+where $\mathcal{C}^+(0, s)$ denotes half-Cauchy with scale $s$.
+
+### Regularized Horseshoe
+
+Piironen & Vehtari introduce slab regularization via:
+
+$$
+\tilde{\lambda}_j^2 = \frac{c^2 \lambda_j^2}{c^2 + \tau^2 \lambda_j^2}
+$$
+
+with $c^2 \sim \text{Inv-Gamma}(\nu/2, \nu s^2/2)$ providing a soft ceiling on coefficient magnitude.
+
+### Shrinkage Factors
+
+The shrinkage factor $\kappa_j$ quantifies the degree of shrinkage:
+
+$$
+\kappa_j = \frac{1}{1 + \tau^2 \lambda_j^2 / c^2}
+$$
+
+**Proposition 3.1 (Shrinkage Interpretation).** As $\kappa_j \to 0$, $\beta_j$ is essentially unshrunken (signal). As $\kappa_j \to 1$, $\beta_j$ is strongly shrunk toward zero (noise).
+
+### Effective Number of Non-Zeros
+
+$$
+m_e = \sum_{j=1}^{p} (1 - \kappa_j)
+$$
+
+## Global Shrinkage Calibration
+
+Following Piironen & Vehtari, calibrate $\tau_0$ based on expected sparsity:
+
+$$
+\tau_0 = \frac{p_0}{p - p_0} \cdot \frac{\sigma}{\sqrt{n}}
+$$
+
+where $p_0$ is the expected number of relevant predictors.
+
+## Stan Implementation
+
+The package uses non-centered parameterization for efficient NUTS sampling:
+
+$$
+z_j \sim \mathcal{N}(0, 1)
+$$
+
+$$
+\beta_j = \tau \cdot \tilde{\lambda}_j \cdot z_j
+$$
+
+**Key diagnostics monitored:**
+
+- Divergent transitions: Should be 0
+- $\hat{R}$: Should be < 1.01
+- Effective sample size (ESS): Should be > 400
+- BFMI: Should be > 0.2
+
+---
+
+# Dimensionality Reduction
+
+## PCA with Bootstrap Significance
+
+### Standard PCA
+
+For centered data matrix $X \in \mathbb{R}^{n \times p}$, PCA solves:
+
+$$
+\max_w w^\top X^\top X w \quad \text{s.t.} \quad \|w\| = 1
+$$
+
+yielding loadings $W = [w_1, \ldots, w_k]$ and scores $Z = XW$.
+
+### Bootstrap Significance Testing
+
+**Algorithm 3: Block Bootstrap for PCA Loadings**
+
+```
+Require: Data X, block length b, replications B
+1: Compute original loadings W^(0)
+2: for r = 1, ..., B do
+3:     Generate bootstrap sample X^(r) via block resampling
+4:     Compute loadings W^(r)
+5:     Apply Procrustes rotation to align with W^(0)
+6: end for
+7: For each loading w_jk, compute p-value: (1/B) Σ_r 𝟙[|w^(r)_jk| > |w^(0)_jk|]
+```
+
+### Entropy of Loadings
+
+Shannon entropy quantifies loading concentration:
+
+$$
+H_k = -\sum_{j=1}^{p} w_{jk}^2 \log(w_{jk}^2)
+$$
+
+where loadings are normalized so $\sum_j w_{jk}^2 = 1$.
+
+- **Low $H_k$**: Concentrated loadings (few variables dominate)
+- **High $H_k$**: Diffuse loadings (many variables contribute)
+
+## Dynamic Factor Models
+
+### Model
+
+For panel $X_t \in \mathbb{R}^p$ at time $t$:
+
+$$
+X_t = \Lambda F_t + e_t, \quad e_t \sim \mathcal{N}(0, \Sigma_e)
+$$
+
+$$
+F_t = A_1 F_{t-1} + \cdots + A_q F_{t-q} + \eta_t, \quad \eta_t \sim \mathcal{N}(0, I_r)
+$$
+
+where $F_t \in \mathbb{R}^r$ are latent factors, $\Lambda \in \mathbb{R}^{p \times r}$ are loadings.
+
+### Factor Selection via Information Criteria
+
+Bai & Ng propose criteria for selecting $r$:
+
+$$
+IC_1(r) = \log(V(r)) + r \cdot \frac{n + p}{np} \log\left(\frac{np}{n + p}\right)
+$$
+
+$$
+IC_2(r) = \log(V(r)) + r \cdot \frac{n + p}{np} \log(\min(n, p))
+$$
+
+$$
+IC_3(r) = \log(V(r)) + r \cdot \frac{\log(\min(n, p))}{\min(n, p)}
+$$
+
+where $V(r)$ is the sum of squared residuals with $r$ factors.
+
+---
+
+# Unit Root Testing
+
+## Test Battery
+
+| Test | $H_0$ | $H_1$ | Specification |
+|------|-------|-------|---------------|
+| ADF (none) | Unit root | Stationary | No constant, no trend |
+| ADF (drift) | Unit root | Stationary | Constant only |
+| ADF (trend) | Unit root | Stationary | Constant + trend |
+| ERS (DF-GLS) | Unit root | Stationary | GLS-detrended |
+| ERS (P-test) | Unit root | Stationary | Point optimal |
+| KPSS (level) | Stationary | Unit root | Level stationarity |
+| KPSS (trend) | Trend-stationary | Unit root | Trend stationarity |
+| PP | Unit root | Stationary | Non-parametric correction |
+
+## ADF Test
+
+$$
+\Delta y_t = \alpha + \beta t + \gamma y_{t-1} + \sum_{j=1}^{k} \delta_j \Delta y_{t-j} + \varepsilon_t
+$$
+
+Test $H_0: \gamma = 0$ vs $H_1: \gamma < 0$.
+
+## ERS Tests
+
+### DF-GLS
+
+Apply GLS transformation with $\bar{\alpha} = 1 - 7/T$ (demeaning) or $\bar{\alpha} = 1 - 13.5/T$ (detrending), then run ADF on transformed series.
+
+### Point Optimal Test
+
+$$
+P_T = \frac{S(\bar{\alpha}) - \bar{\alpha} S(1)}{s_{AR}^2}
+$$
+
+## KPSS Test
+
+$$
+\eta = \frac{1}{T^2} \sum_{t=1}^{T} S_t^2 / \hat{\sigma}_\infty^2
+$$
+
+where $S_t = \sum_{i=1}^{t} e_i$ is partial sum of residuals.
+
+## Synthesis Algorithm
+
+**Algorithm 4: Unit Root Test Synthesis**
+
+```
+Require: Test results with p-values
+1: Count ADF/ERS rejections at α = 0.05: n_reject
+2: Count KPSS non-rejections at α = 0.05: n_accept
+3: if n_reject ≥ 2 AND ADF-trend rejects AND ERS confirms then
+4:     Conclude: trend_stationary
+5: else if n_reject ≥ 2 AND KPSS non-rejects then
+6:     Conclude: stationary
+7: else if ADF/ERS fail to reject AND KPSS rejects then
+8:     Conclude: difference_stationary
+9: else
+10:    Conclude: inconclusive
+11: end if
+```
+
+---
+
+# Master Function: `signal_analysis()`
+
+## Pipeline Architecture
+
+1. **Data Preparation**
+   - Validation and type checking
+   - Missing value handling (interpolation/omission)
+   - Standardization
+   - Optional first-differencing
+
+2. **Spectral Decomposition**
+   - Wavelet MRA
+   - EMD
+   - HP-GC filter
+
+3. **Sparse Regression**
+   - Horseshoe prior estimation
+   - Shrinkage-based variable selection
+
+4. **Factor Analysis**
+   - PCA with bootstrap
+   - DFM estimation
+
+5. **Persistence Analysis**
+   - Unit root test battery
+   - Synthesis
+
+6. **Interpretation Generation**
+
+## Output Structure
+
+```r
+signal_analysis object:
+├── call                    # Function call
+├── data                    # Processed data
+│   ├── Y, X               # Original and standardized
+│   └── standardization    # Parameters
+├── filters
+│   ├── wavelet            # Wavelet decomposition
+│   ├── emd                # EMD results
+│   └── hpgc               # HP-GC trend/cycle
+├── horseshoe
+│   ├── summary            # Posterior summaries
+│   ├── selection          # Variable selection
+│   └── diagnostics        # MCMC diagnostics
+├── pca
+│   ├── loadings           # With bootstrap p-values
+│   ├── scores
+│   └── entropy
+├── dfm
+│   ├── factors
+│   ├── loadings
+│   └── ic_values
+├── unitroot
+│   ├── tests              # Individual results
+│   └── synthesis          # Combined conclusion
+├── interpretation
+│   ├── signal_characteristics
+│   ├── variable_selection
+│   ├── factor_structure
+│   ├── persistence
+│   └── overall_summary
+└── config                  # Configuration used
+```
+
+---
+
+# Interpretation Framework
+
+## Signal Characteristics
+
+**Definition 7.1 (Signal Smoothness).** Measured by variance of second differences:
+
+$$
+\sigma_{\Delta^2 Y}^2 = \text{Var}(\Delta^2 Y_t)
+$$
+
+| $\sigma_{\Delta^2 Y}^2$ | Interpretation |
+|-------------------------|----------------|
+| < 0.01 | Very smooth (strong trend dominance) |
+| 0.01 – 0.1 | Moderately smooth |
+| 0.1 – 0.5 | Moderately volatile |
+| > 0.5 | Highly volatile (noise-dominated) |
+
+## Sparsity Assessment
+
+**Definition 7.2 (Sparsity Ratio).**
+
+$$
+\rho = 1 - \frac{|\{j : \kappa_j < \kappa^*\}|}{p}
+$$
+
+where $\kappa^*$ is the selection threshold (default 0.5).
+
+## Information Topology
+
+**Definition 7.3 (Normalized Entropy).**
+
+$$
+H^* = \frac{H}{\log p}
+$$
+
+where $H$ is Shannon entropy and $\log p$ is maximum possible entropy.
+
+| $H^*$ | Topology |
+|-------|----------|
+| < 0.3 | Concentrated (few variables dominate) |
+| 0.3 – 0.6 | Moderately distributed |
+| > 0.6 | Diffuse (many variables contribute) |
+
+---
+
+# Computational Considerations
+
+## Complexity Analysis
+
+| Method | Time Complexity | Space Complexity |
+|--------|-----------------|------------------|
+| Wavelet (MODWT) | $O(n \log n)$ | $O(nJ)$ |
+| EMD | $O(nKI)$ | $O(nK)$ |
+| HP-GC (MCMC) | $O(nMC)$ | $O(nC)$ |
+| Horseshoe (MCMC) | $O(npMC)$ | $O(np + pC)$ |
+| PCA | $O(np^2)$ | $O(p^2)$ |
+| DFM | $O(npr)$ | $O(nr + pr)$ |
+
+Where: $J$ = wavelet levels, $K$ = IMFs, $I$ = sifting iterations, $M$ = MCMC iterations, $C$ = chains, $r$ = factors.
+
+## Parallelization
+
+- Stan-based methods parallelize across chains automatically
+- Bootstrap replications can be parallelized via `future` backend
+- Within-chain parallelization available for large $p$ via Stan's `reduce_sum`
+
+---
+
+# CRAN Compliance Notes
+
+## Soft Dependency: cmdstanr
+
+Since `cmdstanr` is not on CRAN:
+
+1. Listed in `Suggests`, not `Imports`
+2. Additional repository: `https://mc-stan.org/r-packages/`
+3. All Stan-dependent code wrapped in:
+
+```r
+if (!requireNamespace("cmdstanr", quietly = TRUE)) {
+    stop("Package 'cmdstanr' required for this function.")
+}
+```
+
+4. Examples use `\dontrun{}` for Stan functions
+
+## Namespace Hygiene
+
+- No `library()` or `require()` in package code
+- Explicit `package::function()` for `Suggests` packages
+- No writes to `.GlobalEnv`
+- Temporary files in `tempdir()` only
+
+---
+
+# References
+
+- Bai, J. and Ng, S. (2002). Determining the Number of Factors in Approximate Factor Models. *Econometrica*, 70(1):191–221.
+
+- Grant, A.L. and Chan, J.C.C. (2017). A Bayesian Model Comparison for Trend-Cycle Decompositions of Output. *Journal of Money, Credit and Banking*, 49(2-3):525–552.
+
+- Huang, N.E., Shen, Z., Long, S.R., et al. (1998). The empirical mode decomposition and the Hilbert spectrum for nonlinear and non-stationary time series analysis. *Proceedings of the Royal Society A*, 454:903–995.
+
+- Percival, D.B. and Walden, A.T. (2000). *Wavelet Methods for Time Series Analysis*. Cambridge University Press.
+
+- Piironen, J. and Vehtari, A. (2017). Sparsity information and regularization in the horseshoe and other shrinkage priors. *Electronic Journal of Statistics*, 11(2):5018–5051.
