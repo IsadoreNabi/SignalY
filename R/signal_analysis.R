@@ -212,10 +212,6 @@ signal_analysis <- function(data,
   }
   methods <- match.arg(methods, all_methods, several.ok = TRUE)
   
-  # ===========================================================================
-  # Data Preparation
-  # ===========================================================================
-  
   if (verbose) message("=== SignalY: Comprehensive Signal Analysis ===\n")
   if (verbose) message("[1/7] Preparing data...")
   
@@ -288,10 +284,6 @@ signal_analysis <- function(data,
     X_sds <- rep(1, p)
   }
   
-  # ===========================================================================
-  # Initialize Results
-  # ===========================================================================
-  
   results <- list(
     call = call,
     data = list(
@@ -326,10 +318,6 @@ signal_analysis <- function(data,
       seed = seed
     )
   )
-  
-  # ===========================================================================
-  # Spectral Decomposition (Filters)
-  # ===========================================================================
   
   filter_methods <- intersect(methods, c("wavelet", "emd", "hpgc"))
   
@@ -373,7 +361,7 @@ signal_analysis <- function(data,
           y = Y_std,
           max_imf = fc$emd_max_imf
         )
-        if (verbose) message("    Done. Extracted ", results$filters$emd$n_imf, " IMFs.")
+        if (verbose) message("    Done. Extracted ", results$filters$emd$n_imfs, " IMFs.")
       }, error = function(e) {
         warning("EMD failed: ", e$message)
         results$filters$emd <<- NULL
@@ -390,17 +378,13 @@ signal_analysis <- function(data,
           iterations = fc$hpgc_iterations,
           burnin = fc$hpgc_burnin
         )
-        if (verbose) message("    Done. Selected prior: ", results$filters$hpgc$selected_prior)
+        if (verbose) message("    Done. Selected prior: ", results$filters$hpgc$settings$prior_name)
       }, error = function(e) {
         warning("HP-GC filtering failed: ", e$message)
         results$filters$hpgc <<- NULL
       })
     }
   }
-  
-  # ===========================================================================
-  # Bayesian Variable Selection (Horseshoe)
-  # ===========================================================================
   
   if ("horseshoe" %in% methods) {
     if (verbose) message("\n[3/7] Fitting regularized Horseshoe regression...")
@@ -444,10 +428,6 @@ signal_analysis <- function(data,
     })
   }
   
-  # ===========================================================================
-  # PCA with Bootstrap
-  # ===========================================================================
-  
   if ("pca" %in% methods) {
     if (verbose) message("\n[4/7] Principal Component Analysis with bootstrap...")
     
@@ -482,10 +462,6 @@ signal_analysis <- function(data,
     })
   }
   
-  # ===========================================================================
-  # Dynamic Factor Model
-  # ===========================================================================
-  
   if ("dfm" %in% methods) {
     if (verbose) message("\n[5/7] Estimating Dynamic Factor Model...")
     
@@ -507,20 +483,16 @@ signal_analysis <- function(data,
       )
       
       if (verbose) {
-        message("  - Optimal factors: ", results$dfm$n_factors, 
+        message("  - Optimal factors: ", results$dfm$r_selected, 
                 " (", dc$ic, ")")
         message("  - Variance explained: ", 
-                round(sum(results$dfm$variance_explained) * 100, 1), "%")
+                round(sum(results$dfm$var_explained) * 100, 1), "%")
       }
     }, error = function(e) {
       warning("DFM estimation failed: ", e$message)
       results$dfm <<- NULL
     })
   }
-  
-  # ===========================================================================
-  # Unit Root Tests
-  # ===========================================================================
   
   if ("unitroot" %in% methods) {
     if (verbose) message("\n[6/7] Testing for unit roots...")
@@ -532,7 +504,7 @@ signal_analysis <- function(data,
       )
       
       if (verbose) {
-        message("  - Synthesis: ", results$unitroot$synthesis$conclusion)
+        message("  - Synthesis: ", results$unitroot$persistence_type)
       }
     }, error = function(e) {
       warning("Unit root testing failed: ", e$message)
@@ -540,17 +512,9 @@ signal_analysis <- function(data,
     })
   }
   
-  # ===========================================================================
-  # Automated Technical Interpretation
-  # ===========================================================================
-  
   if (verbose) message("\n[7/7] Generating technical interpretation...")
   
   results$interpretation <- generate_interpretation(results, verbose = verbose)
-  
-  # ===========================================================================
-  # Finalize
-  # ===========================================================================
   
   class(results) <- "signal_analysis"
   
@@ -578,10 +542,6 @@ generate_interpretation <- function(results, verbose = FALSE) {
     persistence = list(),
     overall_summary = NULL
   )
-  
-  # ---------------------------------------------------------------------------
-  # Signal Characteristics (from filters)
-  # ---------------------------------------------------------------------------
   
   if (!is.null(results$filters)) {
     Y <- results$data$Y_std
@@ -613,14 +573,9 @@ generate_interpretation <- function(results, verbose = FALSE) {
     }
   }
   
-  # ---------------------------------------------------------------------------
-  # Variable Selection (from Horseshoe)
-  # ---------------------------------------------------------------------------
-  
   if (!is.null(results$horseshoe)) {
     hs <- results$horseshoe
     
-    # Usar la estructura correcta: $coefficients y $sparsity
     kappa_mean <- hs$coefficients$kappa_mean
     n_selected <- length(hs$selection$selected)
     sparsity_ratio <- 1 - n_selected / results$data$p
@@ -637,19 +592,14 @@ generate_interpretation <- function(results, verbose = FALSE) {
     else if (sparsity_ratio > 0.3) "Moderately dense"
     else "Dense: many predictors contribute"
     
-    # Usar $coefficients$mean en lugar de $summary$beta_mean
-    beta_abs <- abs(hs$coefficients$mean)
+    beta_abs <- abs(hs$coefficients$beta_mean)
     top_idx <- order(beta_abs, decreasing = TRUE)[1:min(5, length(beta_abs))]
     interpretation$variable_selection$top_predictors <- data.frame(
       variable = hs$coefficients$variable[top_idx],
-      beta = hs$coefficients$mean[top_idx],
+      beta = hs$coefficients$beta_mean[top_idx],
       kappa = kappa_mean[top_idx]
     )
   }
-  
-  # ---------------------------------------------------------------------------
-  # Factor Structure (from PCA/DFM)
-  # ---------------------------------------------------------------------------
   
   if (!is.null(results$pca)) {
     pca <- results$pca
@@ -680,21 +630,16 @@ generate_interpretation <- function(results, verbose = FALSE) {
   }
   
   if (!is.null(results$dfm)) {
-    interpretation$factor_structure$dfm_n_factors <- results$dfm$n_factors
+    interpretation$factor_structure$dfm_n_factors <- results$dfm$r_selected
     interpretation$factor_structure$dfm_variance_explained <- 
-      sum(results$dfm$variance_explained)
+      sum(results$dfm$var_explained)
   }
-  
-  # ---------------------------------------------------------------------------
-  # Persistence Properties (from Unit Root)
-  # ---------------------------------------------------------------------------
   
   if (!is.null(results$unitroot)) {
     ur <- results$unitroot
     
-    interpretation$persistence$conclusion <- ur$synthesis$conclusion
-    interpretation$persistence$confidence <- ur$synthesis$confidence
-    interpretation$persistence$evidence <- ur$synthesis$evidence
+    interpretation$persistence$conclusion <- ur$persistence_type
+    interpretation$persistence$evidence <- ur$conclusion
     
     ur_conclusion <- if (!is.null(ur$conclusion)) {
       if (grepl("STATIONARY.*stationary", ur$conclusion, ignore.case = TRUE)) {
@@ -720,10 +665,6 @@ generate_interpretation <- function(results, verbose = FALSE) {
       "Mixed evidence; persistence properties unclear"
     )
   }
-  
-  # ---------------------------------------------------------------------------
-  # Overall Summary
-  # ---------------------------------------------------------------------------
   
   summary_parts <- c()
   
@@ -760,11 +701,6 @@ generate_interpretation <- function(results, verbose = FALSE) {
   return(interpretation)
 }
 
-
-# =============================================================================
-# S3 Methods: print, summary, plot
-# =============================================================================
-
 #' @title Print Method for signal_analysis Objects
 #' @description Print a concise summary of signal analysis results.
 #' @param x An object of class \code{signal_analysis}
@@ -777,7 +713,6 @@ print.signal_analysis <- function(x, ...) {
   cat("                    SignalY: Signal Analysis Results                        \n")
   cat("===========================================================================\n\n")
   
-  # Data summary
   cat("DATA SUMMARY\n")
   cat("-----------------------------------------------------------------------------\n")
   cat("  Observations:", x$data$n, "\n")
@@ -785,17 +720,14 @@ print.signal_analysis <- function(x, ...) {
   cat("  Methods:     ", paste(x$config$methods, collapse = ", "), "\n")
   cat("\n")
   
-  # Interpretation
   if (!is.null(x$interpretation$overall_summary) && 
       nchar(x$interpretation$overall_summary) > 0) {
     cat("SYNTHESIS\n")
     cat("-----------------------------------------------------------------------------\n")
-    # Word wrap the summary
     summary_wrapped <- strwrap(x$interpretation$overall_summary, width = 75)
     cat(" ", paste(summary_wrapped, collapse = "\n  "), "\n\n")
   }
   
-  # Key metrics
   cat("KEY METRICS\n")
   cat("-----------------------------------------------------------------------------\n")
   
@@ -819,15 +751,15 @@ print.signal_analysis <- function(x, ...) {
   
   if (!is.null(x$dfm)) {
     cat("  Dynamic Factor Model:\n")
-    cat("    - Optimal factors:", x$dfm$n_factors, "\n")
+    cat("    - Optimal factors:", x$dfm$r_selected, "\n")
     cat("    - Variance explained:", 
-        round(sum(x$dfm$variance_explained) * 100, 1), "%\n")
+        round(sum(x$dfm$var_explained) * 100, 1), "%\n")
   }
   
   if (!is.null(x$unitroot)) {
     cat("  Unit Root Tests:\n")
-    cat("    - Conclusion:", x$unitroot$synthesis$conclusion, "\n")
-    cat("    - Confidence:", x$unitroot$synthesis$confidence, "\n")
+    cat("    - Conclusion:", x$unitroot$persistence_type, "\n")
+    cat("    - Evidence:", x$unitroot$conclusion, "\n")
   }
   
   cat("\n")
@@ -851,10 +783,6 @@ summary.signal_analysis <- function(object, ...) {
   cat("|               SignalY: Detailed Signal Analysis Summary                   |\n")
   cat("+===========================================================================+\n\n")
   
-  # ===========================================================================
-  # 1. Data Overview
-  # ===========================================================================
-  
   cat("+-----------------------------------------------------------------------------+\n")
   cat("| 1. DATA OVERVIEW                                                           |\n")
   cat("+-----------------------------------------------------------------------------+\n\n")
@@ -865,10 +793,6 @@ summary.signal_analysis <- function(object, ...) {
   cat("  First-differenced:", object$config$first_difference, "\n")
   cat("  NA handling:", object$config$na_action, "\n\n")
   
-  # ===========================================================================
-  # 2. Spectral Decomposition
-  # ===========================================================================
-  
   if (!is.null(object$filters)) {
     cat("+-----------------------------------------------------------------------------+\n")
     cat("| 2. SPECTRAL DECOMPOSITION                                                  |\n")
@@ -877,11 +801,9 @@ summary.signal_analysis <- function(object, ...) {
     if (!is.null(object$filters$wavelet)) {
       cat("  WAVELET MULTI-RESOLUTION ANALYSIS\n")
       cat("  -------------------------------------\n")
-      # CORREGIDO: Fallback robusto para el nombre del filtro
       wf_name <- object$filters$wavelet$filter %||% object$config$filter_config$wavelet_filter %||% "N/A"
       cat("  Filter:", wf_name, "\n")
       cat("  Levels combined:", paste(object$filters$wavelet$levels, collapse = ", "), "\n")
-      # Robusto para combined signal variance
       comb_var <- tryCatch(var(object$filters$wavelet$combined), error = function(e) NA)
       cat("  Combined signal variance:", 
           if (!is.na(comb_var)) round(comb_var, 4) else "N/A", "\n\n")
@@ -890,7 +812,7 @@ summary.signal_analysis <- function(object, ...) {
     if (!is.null(object$filters$emd)) {
       cat("  EMPIRICAL MODE DECOMPOSITION\n")
       cat("  -------------------------------------\n")
-      cat("  Number of IMFs:", if (!is.null(object$filters$emd$n_imf)) object$filters$emd$n_imf else "N/A", "\n")
+      cat("  Number of IMFs:", if (!is.null(object$filters$emd$n_imfs)) object$filters$emd$n_imfs else "N/A", "\n")
       res_var <- tryCatch(var(object$filters$emd$residue), error = function(e) NA)
       cat("  Residue variance:", if (!is.na(res_var)) round(res_var, 4) else "N/A", "\n\n")
     }
@@ -898,18 +820,17 @@ summary.signal_analysis <- function(object, ...) {
     if (!is.null(object$filters$hpgc)) {
       cat("  BAYESIAN HP-GC FILTER\n")
       cat("  -------------------------------------\n")
-      cat("  Selected prior:", object$filters$hpgc$selected_prior %||% "N/A", "\n")
+      cat("  Selected prior:", object$filters$hpgc$settings$prior_name %||% "N/A", "\n")
       trend_var <- tryCatch(var(object$filters$hpgc$trend), error = function(e) NA)
       cycle_var <- tryCatch(var(object$filters$hpgc$cycle), error = function(e) NA)
       cat("  Trend variance:", if (!is.na(trend_var)) round(trend_var, 4) else "N/A", "\n")
       cat("  Cycle variance:", if (!is.na(cycle_var)) round(cycle_var, 4) else "N/A", "\n")
-      if (!is.null(object$filters$hpgc$dic) && is.numeric(object$filters$hpgc$dic)) {
-        cat("  DIC:", round(object$filters$hpgc$dic, 2), "\n")
+      if (!is.null(object$filters$hpgc$dic) && !is.null(object$filters$hpgc$dic$DIC)) {
+        cat("  DIC:", round(object$filters$hpgc$dic$DIC, 2), "\n")
       }
       cat("\n")
     }
     
-    # Signal characteristics
     if (!is.null(object$interpretation$signal_characteristics)) {
       sc <- object$interpretation$signal_characteristics
       cat("  SIGNAL CHARACTERISTICS\n")
@@ -926,10 +847,6 @@ summary.signal_analysis <- function(object, ...) {
     }
   }
   
-  # ===========================================================================
-  # 3. Horseshoe Regression
-  # ===========================================================================
-  
   if (!is.null(object$horseshoe)) {
     cat("+-----------------------------------------------------------------------------+\n")
     cat("| 3. REGULARIZED HORSESHOE REGRESSION                                        |\n")
@@ -940,7 +857,6 @@ summary.signal_analysis <- function(object, ...) {
     cat("  MCMC DIAGNOSTICS\n")
     cat("  -------------------------------------\n")
     if (!is.null(hs$diagnostics)) {
-      # Acceso robusto a diagnósticos
       n_div <- hs$diagnostics$n_divergences
       rhat <- hs$diagnostics$rhat_max
       ess_bulk <- hs$diagnostics$ess_bulk_min
@@ -955,8 +871,6 @@ summary.signal_analysis <- function(object, ...) {
     
     cat("  SHRINKAGE SUMMARY\n")
     cat("  -------------------------------------\n")
-    # Usar la estructura correcta: $hyperparameters es un data frame
-    # Acceso robusto a tau
     tau_val <- NA
     if (!is.null(hs$hyperparameters) && is.data.frame(hs$hyperparameters)) {
       tau_row <- hs$hyperparameters[hs$hyperparameters$parameter == "tau", ]
@@ -970,7 +884,6 @@ summary.signal_analysis <- function(object, ...) {
       cat("  Global tau (mean): N/A\n")
     }
     
-    # Acceso robusto a m_eff
     m_eff_val <- if (!is.null(hs$sparsity$m_eff_mean) && is.numeric(hs$sparsity$m_eff_mean)) {
       hs$sparsity$m_eff_mean
     } else NA
@@ -1010,7 +923,6 @@ summary.signal_analysis <- function(object, ...) {
       cat("  MODEL FIT (LOO-CV)\n")
       cat("  -------------------------------------\n")
       
-      # Acceso robusto a las estimaciones de LOO
       elpd_est <- tryCatch(hs$loo$estimates["elpd_loo", "Estimate"], error = function(e) NA)
       elpd_se <- tryCatch(hs$loo$estimates["elpd_loo", "SE"], error = function(e) NA)
       looic <- tryCatch(hs$loo$estimates["looic", "Estimate"], error = function(e) NA)
@@ -1027,10 +939,6 @@ summary.signal_analysis <- function(object, ...) {
       }
     }
   }
-  
-  # ===========================================================================
-  # 4. PCA
-  # ===========================================================================
   
   if (!is.null(object$pca)) {
     cat("+-----------------------------------------------------------------------------+\n")
@@ -1092,10 +1000,6 @@ summary.signal_analysis <- function(object, ...) {
     }
   }
   
-  # ===========================================================================
-  # 5. Dynamic Factor Model
-  # ===========================================================================
-  
   if (!is.null(object$dfm)) {
     cat("+-----------------------------------------------------------------------------+\n")
     cat("| 5. DYNAMIC FACTOR MODEL                                                    |\n")
@@ -1105,13 +1009,11 @@ summary.signal_analysis <- function(object, ...) {
     
     cat("  FACTOR SELECTION\n")
     cat("  -------------------------------------\n")
-    # CORREGIDO: usar ic en lugar de ic_criterion
     cat("  Information criterion:", object$config$dfm_config$ic %||% "bai_ng_2", "\n")
-    cat("  Optimal factors:", if (!is.null(dfm$n_factors)) dfm$n_factors else "N/A", "\n")
+    cat("  Optimal factors:", if (!is.null(dfm$r_selected)) dfm$r_selected else "N/A", "\n")
     
-    # Acceso robusto a variance_explained
-    var_expl <- if (!is.null(dfm$variance_explained) && is.numeric(dfm$variance_explained) && length(dfm$variance_explained) > 0) {
-      round(sum(dfm$variance_explained) * 100, 1)
+    var_expl <- if (!is.null(dfm$var_explained) && is.numeric(dfm$var_explained) && length(dfm$var_explained) > 0) {
+      round(sum(dfm$var_explained) * 100, 1)
     } else "N/A"
     cat("  Total variance explained:", var_expl, if (is.numeric(var_expl)) "%" else "", "\n\n")
     
@@ -1127,10 +1029,6 @@ summary.signal_analysis <- function(object, ...) {
     }
   }
   
-  # ===========================================================================
-  # 6. Unit Root Tests
-  # ===========================================================================
-  
   if (!is.null(object$unitroot)) {
     cat("+-----------------------------------------------------------------------------+\n")
     cat("| 6. UNIT ROOT TESTS                                                         |\n")
@@ -1140,32 +1038,26 @@ summary.signal_analysis <- function(object, ...) {
     
     cat("  SYNTHESIS\n")
     cat("  -------------------------------------\n")
-    cat("  Conclusion:", ur$synthesis$conclusion %||% "N/A", "\n")
-    cat("  Confidence:", ur$synthesis$confidence %||% "N/A", "\n")
+    cat("  Conclusion:", ur$persistence_type %||% "N/A", "\n")
+    cat("  Evidence:", ur$conclusion %||% "N/A", "\n")
     cat("  Interpretation:", object$interpretation$persistence$interpretation %||% "N/A", "\n\n")
     
     cat("  TEST RESULTS SUMMARY\n")
     cat("  -------------------------------------\n")
     
-    # Print summary table of tests
-    if (!is.null(ur$tests) && length(ur$tests) > 0) {
-      for (test_name in names(ur$tests)) {
-        test <- ur$tests[[test_name]]
-        stat_val <- test$statistic
-        p_val <- test$p_value
-        if (!is.null(stat_val) && !is.null(p_val) && 
-            is.numeric(stat_val) && is.numeric(p_val)) {
-          cat(sprintf("  %-20s stat = %7.3f  p = %.4f\n",
-                      test_name, stat_val, p_val))
+    if (!is.null(ur$summary) && is.data.frame(ur$summary) && nrow(ur$summary) > 0) {
+      for (i in seq_len(nrow(ur$summary))) {
+        row <- ur$summary[i, ]
+        if (!is.null(row$statistic) && !is.null(row$critical_value) &&
+            is.numeric(row$statistic) && is.numeric(row$critical_value)) {
+          cat(sprintf("  %-20s stat = %7.3f  crit = %7.3f  %s\n",
+                      row$test, row$statistic, row$critical_value,
+                      ifelse(row$reject_null, "REJECT", "FAIL TO REJECT")))
         }
       }
     }
     cat("\n")
   }
-  
-  # ===========================================================================
-  # 7. Overall Summary
-  # ===========================================================================
   
   cat("+-----------------------------------------------------------------------------+\n")
   cat("| 7. OVERALL SYNTHESIS                                                        |\n")
@@ -1194,18 +1086,15 @@ summary.signal_analysis <- function(object, ...) {
 #' @export
 plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
   
-  # Determine if interactive
   if (is.null(ask)) {
     ask <- interactive() && length(which) > 1
   }
   
-  # Expand "all"
   all_plots <- c("filters", "horseshoe", "pca", "dfm")
   if ("all" %in% which) {
     which <- all_plots
   }
   
-  # Set up plotting
   if (ask) {
     oask <- grDevices::devAskNewPage(TRUE)
     on.exit(grDevices::devAskNewPage(oask))
@@ -1214,26 +1103,19 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
   old_par <- graphics::par(no.readonly = TRUE)
   on.exit(graphics::par(old_par), add = TRUE)
   
-  # ===========================================================================
-  # Filter Plots
-  # ===========================================================================
-  
   if ("filters" %in% which && !is.null(x$filters)) {
     
-    # Time series and decomposition
     graphics::par(mfrow = c(3, 1), mar = c(4, 4, 3, 2))
     
     Y <- x$data$Y_std
     n <- length(Y)
     time_idx <- 1:n
     
-    # Original series
     graphics::plot(time_idx, Y, type = "l", col = "black", lwd = 1.5,
                    main = "Original Series (Standardized)",
                    xlab = "Time", ylab = "Y")
     graphics::grid()
     
-    # HP-GC decomposition if available
     if (!is.null(x$filters$hpgc)) {
       graphics::plot(time_idx, Y, type = "l", col = "gray60", lwd = 1,
                      main = "HP-GC Trend-Cycle Decomposition",
@@ -1249,7 +1131,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
       graphics::abline(h = 0, lty = 2, col = "gray40")
       graphics::grid()
     } else if (!is.null(x$filters$wavelet)) {
-      # Wavelet combined signal
       graphics::plot(time_idx, x$filters$wavelet$combined, type = "l", 
                      col = "darkgreen", lwd = 1.5,
                      main = paste("Wavelet Combined Signal (D", 
@@ -1257,7 +1138,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
                      xlab = "Time", ylab = "Combined")
       graphics::grid()
       
-      # Smooth component
       graphics::plot(time_idx, x$filters$wavelet$smooth, type = "l",
                      col = "purple", lwd = 1.5,
                      main = "Wavelet Smooth Component",
@@ -1265,25 +1145,20 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
       graphics::grid()
     }
     
-    # EMD if available
-    if (!is.null(x$filters$emd) && x$filters$emd$n_imf >= 2) {
-      graphics::par(mfrow = c(min(4, x$filters$emd$n_imf + 1), 1), 
+    if (!is.null(x$filters$emd) && x$filters$emd$n_imfs >= 2) {
+      graphics::par(mfrow = c(min(4, x$filters$emd$n_imfs + 1), 1), 
                     mar = c(3, 4, 2, 2))
       
       graphics::plot(time_idx, Y, type = "l", col = "black", lwd = 1,
                      main = "EMD Decomposition", xlab = "", ylab = "Original")
       
-      for (i in 1:min(3, x$filters$emd$n_imf)) {
-        graphics::plot(time_idx, x$filters$emd$imf[, i], type = "l",
+      for (i in 1:min(3, x$filters$emd$n_imfs)) {
+        graphics::plot(time_idx, x$filters$emd$imfs[, i], type = "l",
                        col = "steelblue", lwd = 1,
                        main = "", xlab = "", ylab = paste("IMF", i))
       }
     }
   }
-  
-  # ===========================================================================
-  # Horseshoe Plots
-  # ===========================================================================
   
   if ("horseshoe" %in% which && !is.null(x$horseshoe)) {
     
@@ -1294,21 +1169,16 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
     
     graphics::par(mfrow = c(2, 2), mar = c(5, 6, 4, 2))
     
-    # Usar la estructura correcta: $coefficients es un data frame
-    # Nota: coefficients está ordenado por relevance_score, necesitamos reordenar
     coef_df <- hs$coefficients
     
-    # Crear vectores con el orden original de variables
-    beta_mean <- coef_df$mean
-    beta_lower <- coef_df$q025
-    beta_upper <- coef_df$q975
+    beta_mean <- coef_df$beta_mean
+    beta_lower <- coef_df$beta_q025
+    beta_upper <- coef_df$beta_q975
     kappa_mean <- coef_df$kappa_mean
     coef_var_names <- coef_df$variable
     
-    # Determinar cuáles están seleccionados (es un vector de nombres)
     is_selected <- coef_var_names %in% hs$selection$selected
     
-    # Ordenar por |beta| para el plot
     ord <- order(abs(beta_mean), decreasing = TRUE)
     top_n <- min(20, length(beta_mean))
     ord <- ord[1:top_n]
@@ -1325,7 +1195,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
     graphics::abline(v = 0, lty = 2, col = "red")
     graphics::axis(2, at = y_pos, labels = coef_var_names[ord], las = 1, cex.axis = 0.7)
     
-    # Shrinkage factors (kappa)
     graphics::barplot(kappa_mean[ord], horiz = TRUE, names.arg = coef_var_names[ord],
                       col = ifelse(kappa_mean[ord] < hs$selection$threshold, 
                                    "steelblue", "gray70"),
@@ -1333,7 +1202,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
                       xlab = expression(kappa), las = 1, cex.names = 0.7)
     graphics::abline(v = hs$selection$threshold, lty = 2, col = "red", lwd = 2)
     
-    # Kappa vs |beta|
     graphics::plot(kappa_mean, abs(beta_mean), pch = 19,
                    col = ifelse(is_selected, "blue", "gray60"),
                    main = expression("Shrinkage vs |"*beta*"|"),
@@ -1341,9 +1209,8 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
     graphics::abline(v = hs$selection$threshold, lty = 2, col = "red")
     graphics::grid()
     
-    # Posterior predictive check
-    if (!is.null(hs$ppc) && !is.null(hs$ppc$y_rep_mean)) {
-      y_rep_mean <- hs$ppc$y_rep_mean
+    if (!is.null(hs$ppc) && !is.null(hs$ppc$y_rep)) {
+      y_rep_mean <- colMeans(hs$ppc$y_rep)
       y_obs <- x$data$Y_std
       
       graphics::plot(y_obs, y_rep_mean, pch = 19, col = "steelblue", cex = 0.7,
@@ -1354,10 +1221,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
     }
   }
   
-  # ===========================================================================
-  # PCA Plots
-  # ===========================================================================
-  
   if ("pca" %in% which && !is.null(x$pca)) {
     
     pca <- x$pca
@@ -1367,7 +1230,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
     
     graphics::par(mfrow = c(2, 2), mar = c(5, 4, 4, 2))
     
-    # Scree plot
     n_show <- min(10, length(pca$variance_explained))
     ve <- pca$variance_explained[1:n_show]
     
@@ -1379,7 +1241,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
     graphics::lines(1:n_show - 0.5, cumsum(ve) * 100, type = "b", pch = 19, col = "red")
     graphics::axis(4, at = pretty(cumsum(ve) * 100), col.axis = "red")
     
-    # PC1 loadings
     loadings_pc1 <- pca$loadings[, 1]
     ord <- order(abs(loadings_pc1), decreasing = TRUE)
     top_n <- min(20, p)
@@ -1391,7 +1252,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
                       xlab = "Loading", las = 1, cex.names = 0.7)
     graphics::abline(v = 0, lty = 2)
     
-    # PC1 vs PC2 scores
     if (pca$n_components >= 2) {
       graphics::plot(pca$scores[, 1], pca$scores[, 2], pch = 19, col = "steelblue",
                      main = "Score Plot (PC1 vs PC2)",
@@ -1400,7 +1260,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
       graphics::grid()
     }
     
-    # Entropy by component
     n_ent <- min(5, length(pca$entropy))
     graphics::barplot(pca$entropy[1:n_ent], names.arg = paste0("PC", 1:n_ent),
                       col = "darkgreen",
@@ -1410,10 +1269,6 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
     graphics::text(n_ent, log(p), "Max entropy", pos = 1, col = "red", cex = 0.8)
   }
   
-  # ===========================================================================
-  # DFM Plots
-  # ===========================================================================
-  
   if ("dfm" %in% which && !is.null(x$dfm)) {
     
     dfm <- x$dfm
@@ -1422,19 +1277,17 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
     
     graphics::par(mfrow = c(2, 2), mar = c(4, 4, 3, 2))
     
-    # Information criterion
     if (!is.null(dfm$ic_values)) {
       n_ic <- length(dfm$ic_values)
       graphics::plot(1:n_ic, dfm$ic_values, type = "b", pch = 19,
-                     col = ifelse(1:n_ic == dfm$n_factors, "red", "steelblue"),
+                     col = ifelse(1:n_ic == dfm$r_selected, "red", "steelblue"),
                      main = "Information Criterion",
                      xlab = "Number of Factors", ylab = "IC Value")
-      graphics::points(dfm$n_factors, dfm$ic_values[dfm$n_factors], 
+      graphics::points(dfm$r_selected, dfm$ic_values[dfm$r_selected], 
                        pch = 19, col = "red", cex = 2)
       graphics::grid()
     }
     
-    # Factor time series
     if (!is.null(dfm$factors)) {
       n_plot <- min(3, ncol(dfm$factors))
       for (i in 1:n_plot) {
@@ -1446,10 +1299,9 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
       }
     }
     
-    # Variance explained
-    if (!is.null(dfm$variance_explained)) {
-      n_show <- length(dfm$variance_explained)
-      graphics::barplot(dfm$variance_explained * 100, 
+    if (!is.null(dfm$var_explained)) {
+      n_show <- length(dfm$var_explained)
+      graphics::barplot(dfm$var_explained * 100, 
                         names.arg = paste0("F", 1:n_show),
                         col = "steelblue",
                         main = "Variance Explained by Factor",
@@ -1457,16 +1309,10 @@ plot.signal_analysis <- function(x, which = "all", ask = NULL, ...) {
     }
   }
   
-  # Reset par
   graphics::par(mfrow = c(1, 1))
   
   invisible(x)
 }
-
-
-# =============================================================================
-# Helper: Null-coalescing operator
-# =============================================================================
 
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
